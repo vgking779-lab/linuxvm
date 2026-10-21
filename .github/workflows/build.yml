@@ -52,5 +52,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: LinuxVM-debug-apk
-          path: app/build/outputs/apk/debu
-          g/*.apk
+          path: app/build/outputs/apk/debug/*.apk
