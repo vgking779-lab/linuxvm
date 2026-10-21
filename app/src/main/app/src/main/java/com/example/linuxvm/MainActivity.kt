@@ -6,6 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.graphics.Typeface
 import android.text.InputType
+import android.util.Log
 import android.view.inputmethod.EditorInfo
 import android.widget.*
 import java.io.File
@@ -31,8 +32,38 @@ class MainActivity : Activity() {
     private val rootfs get() = File(filesDir, "rootfs")
     private val nativeDir get() = applicationInfo.nativeLibraryDir
 
+    private fun showError(title: String, text: String) {
+        val t = TextView(this).apply {
+            this.text = "$title\n\n$text"
+            setTextIsSelectable(true)
+            textSize = 11f
+            setPadding(24, 24, 24, 24)
+        }
+        setContentView(ScrollView(this).apply { addView(t) })
+    }
+
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        val crashFile = File(filesDir, "crash.txt")
+        Thread.setDefaultUncaughtExceptionHandler { _, e ->
+            try { crashFile.writeText(Log.getStackTraceString(e)) } catch (_: Exception) {}
+            android.os.Process.killProcess(android.os.Process.myPid())
+            System.exit(10)
+        }
+        if (crashFile.exists()) {
+            val old = crashFile.readText()
+            crashFile.delete()
+            showError("ERRO DA ULTIMA VEZ (tire um print):", old)
+            return
+        }
+        try {
+            buildUi()
+        } catch (e: Throwable) {
+            showError("ERRO AO ABRIR (tire um print):", Log.getStackTraceString(e))
+        }
+    }
+
+    private fun buildUi() {
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24) }
 
         spinner = Spinner(this).apply {
@@ -40,12 +71,12 @@ class MainActivity : Activity() {
         }
         urlField = EditText(this).apply { hint = "URL de rootfs .tar.gz (opcional)"; setSingleLine() }
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        val install = Button(this).apply { text = "Instalar"; setOnClickListener { install() } }
-        val start = Button(this).apply { text = "Iniciar"; setOnClickListener { start() } }
-        val stop = Button(this).apply { text = "Parar"; setOnClickListener { shell?.destroy(); print("\n[parado]\n") } }
-        buttons.addView(install); buttons.addView(start); buttons.addView(stop)
+        val installBtn = Button(this).apply { text = "Instalar"; setOnClickListener { install() } }
+        val startBtn = Button(this).apply { text = "Iniciar"; setOnClickListener { start() } }
+        val stopBtn = Button(this).apply { text = "Parar"; setOnClickListener { shell?.destroy(); print("\n[parado]\n") } }
+        buttons.addView(installBtn); buttons.addView(startBtn); buttons.addView(stopBtn)
 
-        log = TextView(this).apply { typeface = Typeface.MONOSPACE; textSize = 12f; setTextIsSelectable(true) }
+        log = TextView(this).apply { typeface = Typeface.MONOSPACE; textSize = 12f }
         scroll = ScrollView(this).apply { addView(log) }
         input = EditText(this).apply {
             hint = "comando"; setSingleLine()
@@ -61,31 +92,36 @@ class MainActivity : Activity() {
         print("ABI: ${android.os.Build.SUPPORTED_ABIS.joinToString()}\nToque em Instalar e depois em Iniciar.\n")
     }
 
-    private fun print(s: String) = ui.post {
-        log.append(s); scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
+    private fun print(s: String) {
+        ui.post {
+            log.append(s)
+            scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
+        }
     }
 
-    private fun install() = Thread {
-        try {
-            val url = urlField.text.toString().trim().ifEmpty { distros[spinner.selectedItemPosition].second }
-            if (url.isEmpty()) { print("Informe uma URL.\n"); return@Thread }
-            print("Baixando $url\n")
-            val tar = File(cacheDir, "rootfs.tar.gz")
-            val c = URL(url).openConnection() as HttpURLConnection
-            c.instanceFollowRedirects = true
-            c.inputStream.use { i -> tar.outputStream().use { o -> i.copyTo(o) } }
-            print("Extraindo...\n")
-            rootfs.deleteRecursively(); rootfs.mkdirs()
-            val p = ProcessBuilder("/system/bin/tar", "-xzf", tar.absolutePath, "-C", rootfs.absolutePath)
-                .redirectErrorStream(true).start()
-            p.inputStream.bufferedReader().forEachLine { print("tar: $it\n") }
-            p.waitFor()
-            File(rootfs, "etc").mkdirs()
-            File(rootfs, "etc/resolv.conf").apply { delete(); writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n") }
-            tar.delete()
-            print("Pronto. Toque em Iniciar.\n")
-        } catch (e: Exception) { print("Erro: $e\n") }
-    }.start()
+    private fun install() {
+        Thread {
+            try {
+                val url = urlField.text.toString().trim().ifEmpty { distros[spinner.selectedItemPosition].second }
+                if (url.isEmpty()) { print("Informe uma URL.\n"); return@Thread }
+                print("Baixando $url\n")
+                val tar = File(cacheDir, "rootfs.tar.gz")
+                val c = URL(url).openConnection() as HttpURLConnection
+                c.instanceFollowRedirects = true
+                c.inputStream.use { i -> tar.outputStream().use { o -> i.copyTo(o) } }
+                print("Extraindo...\n")
+                rootfs.deleteRecursively(); rootfs.mkdirs()
+                val p = ProcessBuilder("/system/bin/tar", "-xzf", tar.absolutePath, "-C", rootfs.absolutePath)
+                    .redirectErrorStream(true).start()
+                p.inputStream.bufferedReader().forEachLine { print("tar: $it\n") }
+                p.waitFor()
+                File(rootfs, "etc").mkdirs()
+                File(rootfs, "etc/resolv.conf").apply { delete(); writeText("nameserver 8.8.8.8\nnameserver 1.1.1.1\n") }
+                tar.delete()
+                print("Pronto. Toque em Iniciar.\n")
+            } catch (e: Exception) { print("Erro: $e\n") }
+        }.start()
+    }
 
     private fun start() {
         if (!File(rootfs, "bin").exists()) { print("Instale um rootfs primeiro.\n"); return }
@@ -107,10 +143,13 @@ class MainActivity : Activity() {
         try {
             val p = pb.start(); shell = p
             print("[shell iniciado]\n")
-            Thread { p.inputStream.bufferedReader().use { r ->
-                val buf = CharArray(2048); var n: Int
-                while (r.read(buf).also { n = it } > 0) print(String(buf, 0, n))
-            }; print("\n[shell encerrado]\n") }.start()
+            Thread {
+                p.inputStream.bufferedReader().use { r ->
+                    val buf = CharArray(2048); var n: Int
+                    while (r.read(buf).also { n = it } > 0) print(String(buf, 0, n))
+                }
+                print("\n[shell encerrado]\n")
+            }.start()
         } catch (e: Exception) { print("Erro ao iniciar: $e\n") }
     }
 
