@@ -1,0 +1,56 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Baixar proot (Termux) para jniLibs
+        run: |
+          set -euo pipefail
+          sudo apt-get update && sudo apt-get install -y patchelf
+          BASE=https://packages.termux.dev/apt/termux-main
+          curl -fsSL "$BASE/dists/stable/main/binary-aarch64/Packages" -o Packages
+          getdeb() {
+            awk -v p="$1" 'BEGIN{RS="";FS="\n"} $1=="Package: "p {for(i=1;i<=NF;i++) if($i ~ /^Filename: /){sub(/^Filename: /,"",$i); print $i}}' Packages
+          }
+          mkdir -p work
+          for pkg in proot libtalloc; do
+            f=$(getdeb $pkg | head -n1)
+            [ -n "$f" ] || { echo "pacote $pkg nao encontrado"; exit 1; }
+            curl -fsSL "$BASE/$f" -o "work/$pkg.deb"
+            dpkg-deb -x "work/$pkg.deb" work/x
+          done
+          U=work/x/data/data/com.termux/files/usr
+          J=app/src/main/jniLibs/arm64-v8a
+          mkdir -p $J
+          cp "$U/bin/proot" $J/libproot.so
+          cp "$U/libexec/proot/loader" $J/libproot-loader.so
+          cp -L "$U/lib/libtalloc.so.2" $J/libtalloc.so
+          patchelf --replace-needed libtalloc.so.2 libtalloc.so $J/libproot.so
+          ls -l $J
+
+      - name: Compilar APK
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LinuxVM-debug-apk
+          path: app/build/outputs/apk/debu
+          g/*.apk
